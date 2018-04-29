@@ -1,17 +1,19 @@
 package org.aitester
 
-import org.json4s.JsonDSL.WithDouble._
-import org.json4s.native.JsonMethods._
 import org.aitester.exchange.SecurityInfo
+import org.json4s.DefaultFormats
 
 object SerializationTest extends App{
 
+  implicit val formats = DefaultFormats
+
   val securityInfo = SecurityInfo("INTC", 10.67)
 
-  val secInfoJson = ( "securityinfo" ->(
-          ( "ticker" -> securityInfo.ticker)
-          ~ ( "price" -> securityInfo.price)
-    ))
+  println(securityInfo.asJson)
 
-  println(compact(render(secInfoJson)))
+  val secJson = """{ "ticker" : "AMZN", "price":100.56}"""
+
+  val securityInfo1 = SecurityInfo(secJson)
+
+  println(securityInfo1.toString)
 }

@@ -5,65 +5,55 @@ import akka.stream.ActorMaterializer
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model._
 import akka.http.scaladsl.server.Directives._
+import org.slf4j.LoggerFactory
 
 import scala.io.StdIn
 
-case class SecurityInfo(ticker: String, price : Double){
-  override def toString: String = s"securityInfo:${ticker}:${price}"
-
-  def key : String = s"securityInfo:${ticker}"
-}
-
-case class QuoteInfo(ticker:String, action: String, timestamp: Long, qty: Int, price: Double){
-  override def toString: String = s"quoteInfo:${ticker}:${action}:${timestamp}:${qty}:${price}"
-
-  def key : String = s"quoteInfo:${ticker}:${action}:${timestamp}"
-}
 
 //dummy class to simulate the exchange
 object Exchange extends App{
+  val log = LoggerFactory.getLogger(Exchange.getClass.getName)
   implicit val system = ActorSystem("exchange")
   implicit val executionContext = system.dispatcher
   implicit val materialize = ActorMaterializer()
   val levelDBStore = new LevelDBStore("exchange-db")
 
-  def covertFromDbValue(dbString : String) : Any = {
-    val strArray = dbString.split(":")
-    strArray(0) match {
-      case "securityInfo" => SecurityInfo(strArray(1), strArray(2).toDouble)
-    }
-  }
-
   val route = path("ping") {
     get{
       complete(HttpEntity(ContentTypes.`text/plain(UTF-8)` ,"ALIVE\n"))
     }
-  } ~ path ("security" / Segment / DoubleNumber ) { (securityName, price)  =>
+  } ~ path ("security" / Segment / DoubleNumber ) { (ticker, price)  =>
     put {
-      println(securityName + ":" + price)
-      levelDBStore.putInDB(securityName, price.toString)
-      complete(HttpEntity(ContentTypes.`text/plain(UTF-8)`, "SUCCESS\n"))
+      val securityInfo = SecurityInfo(ticker, price)
+      val key = SecurityInfo.key(ticker)
+      log.info(s"SecurityInfo - PUT : ${securityInfo.asJson}")
+      levelDBStore.putInDB(key, securityInfo.asJson)
+      complete(HttpEntity(ContentTypes.`application/json`, securityInfo.asJson))
     }
-  } ~ path ("security" / Segment) { securityName =>
+  } ~ path ("security" / Segment) { ticker =>
     get {
-      println(securityName)
-      val priceOption = levelDBStore.getFromDB(securityName)
-      priceOption match {
-        case Some(price) => complete(HttpEntity(ContentTypes.`text/plain(UTF-8)`, securityName + ":" + price + "\n"))
-        case None => complete(HttpEntity(ContentTypes.`text/plain(UTF-8)`, securityName + ": unknown\n"))
+      log.info(s"SecurityInfo GET : ${ticker}")
+      val key = SecurityInfo.key(ticker)
+      val secInfoOption = levelDBStore.getFromDB(key)
+      secInfoOption match {
+        case Some(secInfo) => complete(HttpEntity(ContentTypes.`application/json`,secInfo))
+        case None => complete(HttpResponse(StatusCodes.BadRequest))
       }
     }
-  } ~ path ( "quote" / Segment / Segment / IntNumber / DoubleNumber) { (securityName, action, qty, price) =>
+  } ~ path ( "quote" / Segment / Segment / IntNumber / DoubleNumber) { (ticker, action, qty, price) =>
     {
-      println(s"${securityName} : ${action} : ${qty} : ${price}")
-      put{
-        complete("SUCCESS")
+      put {
+        val quoteInfo = QuoteInfo(ticker, action, System.currentTimeMillis(), qty, price)
+        log.info(s"QuoteInfo PUT : ${quoteInfo.asJson}")
+        val key = QuoteInfo.key(ticker, action)
+        levelDBStore.putInDB(key, quoteInfo.asJson)
+        complete(HttpEntity(ContentTypes.`application/json`, quoteInfo.asJson))
       }
     }
   } ~ path ( "trade" / Segment / Segment / IntNumber / DoubleNumber) { (securityName, action, qty, price) =>
     {
-      println(s"${securityName} : ${action} : ${qty} : ${price}")
       put{
+        log.info(s"${securityName} : ${action} : ${qty} : ${price}")
         //if incoming price for buy is 1 tick better than current price - perform trade
         //if incoming price for sell is 1 tick lesse than current price - perform trade
         complete("SUCCESS")
@@ -73,7 +63,7 @@ object Exchange extends App{
 
   val bindingFuture = Http().bindAndHandle(route, "localhost", 8080)
 
-  println("server running on port 8080 \n press return to stop.")
+  log.info("server running on port 8080. Press return to stop.")
   StdIn.readLine()
   bindingFuture.flatMap(_.unbind()).onComplete(_ => system.terminate())
 }
