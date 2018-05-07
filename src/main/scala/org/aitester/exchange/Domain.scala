@@ -1,8 +1,6 @@
 package org.aitester.exchange
 
-import org.json4s.{DefaultFormats, NoTypeHints}
-import org.json4s.JsonDSL.WithDouble._
-import org.json4s.native.JsonMethods._
+import org.json4s.NoTypeHints
 import org.json4s.native.Serialization
 import org.json4s.native.Serialization._
 
@@ -63,7 +61,7 @@ object QuotesList {
   def key(ticker: String) : String = s"${prefix}:${ticker}"
 }
 
-case class TradeInfo(ticker:String, action: String, timestamp: Long, qty: Int, price: Double){
+case class TradeInfo(ticker:String, action: String, timestamp: Long, qty: Int, price: Double, status: String = "REQUESTED"){
   implicit val formats = Serialization.formats(NoTypeHints)
   def asJson : String = write(this)
 }

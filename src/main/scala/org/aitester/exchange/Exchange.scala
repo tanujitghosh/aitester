@@ -8,12 +8,11 @@ import akka.stream.{ActorMaterializer, OverflowStrategy}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model._
 import akka.http.scaladsl.server.Directives._
-import akka.stream.scaladsl.{FileIO, Flow, Source}
+import akka.stream.scaladsl.{FileIO, Flow, Sink, Source}
 import akka.util.ByteString
 import org.slf4j.LoggerFactory
 
 import scala.io.StdIn
-
 
 /**
   * Class to simulate Exchange operations
@@ -22,7 +21,7 @@ import scala.io.StdIn
 class Exchange {
   val log = LoggerFactory.getLogger(Exchange.getClass.getName)
 
-  def route(levelDBStore: LevelDBStore, quotesFlowActor: ActorRef) = path("ping") {
+  def route(levelDBStore: LevelDBStore, quotesFlowActor: ActorRef, tradesFlowActor: ActorRef) = path("ping") {
     get{
       complete(HttpEntity(ContentTypes.`text/plain(UTF-8)` ,"ALIVE\n"))
     }
@@ -83,11 +82,36 @@ class Exchange {
   } ~ path ( "trade" / Segment / Segment / IntNumber / DoubleNumber) { (ticker, action, qty, price) =>
     {
       put {
-        val tradeInfo = TradeInfo(ticker, action, System.currentTimeMillis(), qty, price)
-        log.info(s"TradeInfo PUT : ${tradeInfo.asJson}")
-        //if incoming price for buy is 1 tick better than current price - perform trade
-        //if incoming price for sell is 1 tick lesse than current price - perform trade
-        complete("SUCCESS")
+        val key = SecurityInfo.key(ticker)
+        //check for current price of security
+        val secInfoOption = levelDBStore.getFromDB(key)
+        secInfoOption match {
+          case Some(secInfoStr) => {
+            val secInfo = SecurityInfo(secInfoStr)
+            val tradeStatus = action.toLowerCase match{
+              case "buy" => {
+                //if incoming price for buy is 1 tick better than current price - perform trade
+                if(price - secInfo.price > 0.01 ) "SUCCESS"
+                else "FAILED"
+              }
+              case "sell" => {
+                //if incoming price for sell is 1 tick less than current price - perform trade
+                println(secInfo.price - price)
+                if(secInfo.price - price > 0.011) "SUCCESS"
+                else "FAILED"
+              }
+              case _ => "FAILED"
+            }
+            val tradeInfo = TradeInfo(ticker, action, System.currentTimeMillis(), qty, price, tradeStatus)
+            log.info(s"TradeInfo PUT : ${tradeInfo.asJson},security price - ${secInfo.price}")
+            tradesFlowActor.tell(tradeInfo.asJson, ActorRef.noSender)
+            complete(HttpEntity(ContentTypes.`application/json`,tradeInfo.asJson))
+          }
+          case None => {
+            log.info(s"TradeInfo PUT : ${ticker},${action},${qty},${price} - bad request")
+            complete(HttpResponse(StatusCodes.BadRequest))
+          }
+        }
       }
     }
   }~ path( "quoteslist" / Segment ) { (ticker) =>
@@ -122,8 +146,7 @@ class Exchange {
         Set(StandardOpenOption.APPEND, StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.SYNC)))
       .run()
 
-
-    val bindingFuture = Http().bindAndHandle(route(levelDBStore, quotesFlowActor), "localhost", 8080)
+    val bindingFuture = Http().bindAndHandle(route(levelDBStore, quotesFlowActor, tradesFlowActor), "localhost", 8080)
     log.info("server running on port 8080. Press return to stop.")
     StdIn.readLine()
     bindingFuture.flatMap(_.unbind()).onComplete(_ => {
